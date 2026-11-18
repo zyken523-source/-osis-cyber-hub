@@ -1,98 +1,128 @@
+
 import streamlit as st
-import asyncio
-import httpx
 import phonenumbers
-from phonenumbers import carrier
-import urllib.parse
+from phonenumbers import carrier, geocoder, number_type
 
-st.set_page_config(page_title="OSIS Cyber Hub", page_icon="🕵️‍♂️", layout="wide")
+st.set_page_config(
+    page_title="OSIS Cyber Hub",
+    page_icon="🕵️",
+    layout="wide"
+)
 
-st.title("🕵️‍♂️ OSIS // Cyber Hub")
-st.write("Pemetaan Nomor HP & GetContact OSINT (Bypass Edition)")
+st.title("🕵️ OSIS // Cyber Hub")
+st.caption("Phone Number Intelligence & Validation")
 
-async def check_whatsapp(client, info):
+st.info(
+    "Mode aman: analisis format dan metadata nomor "
+    "tanpa mengakses API internal platform."
+)
+
+phone = st.text_input(
+    "Masukkan nomor HP",
+    placeholder="08123456789"
+)
+
+region = st.selectbox(
+    "Wilayah nomor",
+    ["ID", "MY", "SG", "US"]
+)
+
+def analyze_phone(raw_phone, region):
     try:
-        r = await client.post("https://v.whatsapp.net/v2/exist", data={"cc": info["cc"], "in": info["national"]}, headers={"User-Agent": "WhatsApp/2.24.6.77"})
-        if "exists=true" in r.text: return "Registered"
-        if "exists=false" in r.text: return "Not Registered"
-    except: pass
-    return "Unknown (IP Server Diblokir)"
+        parsed = phonenumbers.parse(raw_phone, region)
 
-async def check_instagram(client, info):
-    try:
-        r = await client.post("https://i.instagram.com/api/v1/accounts/check_phone_number/", data={"phone_number": info["e164"]}, headers={"X-IG-App-ID": "936619743392459"})
-        if "phone_number_taken" in r.text: return "Registered"
-        if '"status":"ok"' in r.text: return "Not Registered"
-    except: pass
-    return "Unknown (IP Server Diblokir)"
+        if not phonenumbers.is_possible_number(parsed):
+            return None, "Nomor tidak mungkin digunakan."
 
-async def run_scan(raw_phone):
-    try:
-        pn = phonenumbers.parse(raw_phone, "ID")
-        # Bikin berbagai format penulisan nomor
-        e164 = phonenumbers.format_number(pn, phonenumbers.PhoneNumberFormat.E164)
-        intl = phonenumbers.format_number(pn, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
-        natl = phonenumbers.format_number(pn, phonenumbers.PhoneNumberFormat.NATIONAL)
-        
-        info = {
-            "e164": e164,
-            "intl": intl, # +62 857-2020-3576
-            "natl": natl, # 0857-2020-3576
-            "cc": str(pn.country_code),
-            "national": str(pn.national_number),
-            "carrier": carrier.name_for_number(pn, "en") or "Unknown"
+        if not phonenumbers.is_valid_number(parsed):
+            return None, "Nomor tidak valid menurut metadata."
+
+        phone_type = number_type(parsed)
+
+        types = {
+            0: "Fixed Line",
+            1: "Mobile",
+            2: "Fixed Line / Mobile",
+            3: "Toll Free",
+            4: "Premium Rate",
+            5: "Shared Cost",
+            6: "VoIP",
+            7: "Personal Number",
+            8: "Pager",
+            9: "UAN",
+            10: "Voicemail"
         }
-    except:
-        return None
 
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-        wa, ig = await asyncio.gather(
-            check_whatsapp(client, info),
-            check_instagram(client, info)
-        )
-    
-    info["WhatsApp"] = wa
-    info["Instagram"] = ig
-    return info
+        result = {
+            "E.164": phonenumbers.format_number(
+                parsed,
+                phonenumbers.PhoneNumberFormat.E164
+            ),
+            "International": phonenumbers.format_number(
+                parsed,
+                phonenumbers.PhoneNumberFormat.INTERNATIONAL
+            ),
+            "National": phonenumbers.format_number(
+                parsed,
+                phonenumbers.PhoneNumberFormat.NATIONAL
+            ),
+            "Country": geocoder.description_for_number(
+                parsed, "en"
+            ) or "Unknown",
+            "Carrier": carrier.name_for_number(
+                parsed, "en"
+            ) or "Unknown",
+            "Type": types.get(phone_type, "Unknown"),
+            "Country Code": parsed.country_code
+        }
 
-phone = st.text_input("Masukkan Nomor HP (contoh: 08123456789)", "")
+        return result, None
 
-if st.button("🚀 Execute Scan", use_container_width=True):
-    if not phone:
-        st.warning("Masukkan nomor dulu bree!")
+    except phonenumbers.NumberParseException as error:
+        return None, str(error)
+
+if st.button("🚀 ANALYZE NUMBER", use_container_width=True):
+
+    if not phone.strip():
+        st.warning("Masukkan nomor terlebih dahulu.")
+
     else:
-        with st.spinner("Sedang memindai..."):
-            result = asyncio.run(run_scan(phone))
-            
-            if result:
-                st.success(f"Berhasil scan: {result['e164']}")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.info(f"**Carrier:** {result['carrier']}")
-                with col2:
-                    st.info(f"**Format:** {result['intl']}")
-                
-                st.subheader("📱 Platform Footprint (via API Internal)")
-                st.write(f"**WhatsApp:** {result['WhatsApp']}")
-                st.write(f"**Instagram:** {result['Instagram']}")
-                st.caption("*Catatan: 'Unknown' wajar terjadi di server gratis karena IP diblokir oleh WhatsApp/IG.*")
-                
-                st.divider()
-                st.subheader("🔍 Dork Queries (GetContact OSINT)")
-                st.write("Klik tombol di bawah ini untuk mencari jejak nama pemilik nomor:")
-                
-                # Link DuckDuckGo HTML (lebih gampang nembus)
-                q_umum = urllib.parse.quote(f'"{result["e164"]}" OR "{result["natl"]}" OR "{result["intl"]}"')
-                st.markdown(f"👉 **[Cari Jejak Umum (DuckDuckGo)](https://html.duckduckgo.com/html/?q={q_umum})**")
-                
-                # Link Google Facebook/LinkedIn
-                q_sosmed = urllib.parse.quote(f'site:facebook.com OR site:linkedin.com "{result["natl"]}" OR "{result["intl"]}"')
-                st.markdown(f"👉 **[Cari Sosial Media (Google)](https://www.google.com/search?q={q_sosmed})**")
-                
-                # Link Truecaller (Manual)
-                q_true = result["e164"].replace("+", "")
-                st.markdown(f"👉 **[Cek Truecaller (Manual)](https://www.truecaller.com/search/id/{q_true})**")
-                
-            else:
-                st.error("Format nomor tidak valid!")
+        with st.spinner("Menganalisis nomor..."):
+
+            result, error = analyze_phone(phone, region)
+
+        if error:
+            st.error(error)
+
+        elif result:
+            st.success("Analisis nomor berhasil!")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.metric("Country Code", result["Country Code"])
+                st.metric("Carrier", result["Carrier"])
+                st.metric("Number Type", result["Type"])
+
+            with col2:
+                st.metric("Country", result["Country"])
+                st.code(result["E.164"])
+                st.write("**International:**")
+                st.code(result["International"])
+
+            st.divider()
+
+            st.subheader("📊 Number Intelligence")
+
+            st.json(result)
+
+            st.caption(
+                "Catatan: Informasi operator berasal dari "
+                "metadata dan tidak selalu menunjukkan "
+                "operator aktif saat ini."
+            )
+
+            st.success("Selesai.")
+
+st.divider()
+st.caption("OSIS Cyber Hub | Educational OSINT Tool")
